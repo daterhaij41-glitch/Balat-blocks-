@@ -1,9 +1,8 @@
-name: Build BalatBlocks APK
+name: Build BalatBlocks Offline APK
 
 on:
   push:
-    branches:
-      - main
+    branches: [main, master]
   workflow_dispatch:
 
 permissions:
@@ -12,83 +11,64 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Setup Java 17
+      - name: Set up Java 17
         uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android SDK
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v4
 
-      - name: Install Android SDK Packages
+      - name: Install Android SDK packages
         run: |
-          sdkmanager --licenses
-          sdkmanager --install \
-            "platform-tools" \
-            "platforms;android-34" \
-            "build-tools;34.0.0"
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
 
-      - name: Extract ZIP Project
+      - name: Extract project ZIP if present
         shell: bash
         run: |
           set -euo pipefail
-
-          mkdir -p "$GITHUB_WORKSPACE/_source"
-
-          ZIP_FOUND=false
-
-          while IFS= read -r -d '' ZIP_FILE; do
-            echo "Extracting: $ZIP_FILE"
-            unzip -oq "$ZIP_FILE" -d "$GITHUB_WORKSPACE/_source"
-            ZIP_FOUND=true
-          done < <(
-            find . -type f -iname "*.zip" \
-              ! -path "./.git/*" \
-              ! -path "./_source/*" \
-              -print0
-          )
-
-          if [ "$ZIP_FOUND" = false ]; then
-            echo "::error::No ZIP project file found in repository."
+          mkdir -p "$RUNNER_TEMP/balat-source"
+          shopt -s nullglob
+          if [[ -f "$GITHUB_WORKSPACE/BalatBlocks-Offline-Edition.zip" ]]; then
+            zips=( "$GITHUB_WORKSPACE/BalatBlocks-Offline-Edition.zip" )
+          else
+            zips=( *.zip *.ZIP )
+          fi
+          if (( ${#zips[@]} )); then
+            for archive in "${zips[@]}"; do
+              echo "Extracting $archive"
+              unzip -oq "$archive" -d "$RUNNER_TEMP/balat-source"
+            done
+            SOURCE="$RUNNER_TEMP/balat-source"
+          else
+            SOURCE="$GITHUB_WORKSPACE"
+          fi
+          WRAPPER=$(find "$SOURCE" -type f -name gradlew -print -quit)
+          if [[ -z "$WRAPPER" ]]; then
+            echo "::error::Could not find gradlew. Add the project ZIP to the repository root, or upload the extracted project."
+            find "$SOURCE" -maxdepth 4 -type f | head -120
             exit 1
           fi
-
-      - name: Build Android APK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          WRAPPER=$(find "$GITHUB_WORKSPACE/_source" \
-            -type f -name gradlew -print -quit)
-
-          if [ -z "$WRAPPER" ]; then
-            echo "::error::No gradlew found inside ZIP."
-            echo "Extracted files:"
-            find "$GITHUB_WORKSPACE/_source" \
-              -maxdepth 5 -type f | head -150
-            exit 1
-          fi
-
           PROJECT_DIR=$(dirname "$WRAPPER")
+          echo "BALAT_PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Android project found in: $PROJECT_DIR"
 
-          echo "Android project: $PROJECT_DIR"
-
-          cd "$PROJECT_DIR"
-          chmod +x gradlew
-
-          ./gradlew --no-daemon --stacktrace assembleDebug
+      - name: Build debug APK
+        run: |
+          cd "$BALAT_PROJECT_DIR"
+          chmod +x ./gradlew
+          ./gradlew --no-daemon --stacktrace clean assembleDebug
 
       - name: Upload APK
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
-          name: BalatBlocks-APK
-          path: "_source/**/build/outputs/apk/debug/*.apk"
+          name: BalatBlocks-Offline-APK
+          path: ${{ env.BALAT_PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
-          retention-days: 14
-          
+          retention-days: 30
